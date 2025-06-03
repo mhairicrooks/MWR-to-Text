@@ -88,6 +88,48 @@ class MultitaskModel(nn.Module):
         else:
             return class_logits, None, None
 
+# Define Dataset class
+class MultitaskDataset(Dataset):
+    """
+    A custom PyTorch Dataset for multitask learning that combines structured features 
+    and tokenized text data.
+
+    Args:
+        df (pandas.DataFrame): The input dataframe containing the dataset. Each row should 
+            include 'features' (a list or array of floats), 'class_label' (an integer), and 
+            'synthetic_description' (a string).
+        tokenizer (transformers.PreTrainedTokenizer): A HuggingFace tokenizer used to 
+            tokenize the text descriptions.
+        max_length (int, optional): The maximum sequence length for tokenized text. Defaults to 64.
+
+    Returns:
+        Tuple containing:
+            - features (torch.FloatTensor): Structured input features.
+            - label (torch.LongTensor): Class label.
+            - input_ids (torch.LongTensor): Token IDs from the tokenizer.
+            - attention_mask (torch.LongTensor): Attention mask from the tokenizer.
+            - input_ids (torch.LongTensor): Token IDs (repeated, may be redundant).
+    """
+    def __init__(self, df, tokenizer, max_length=64):
+        self.df = df
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        features = torch.tensor(row['features'], dtype=torch.float)
+        label = torch.tensor(row['class_label'], dtype=torch.long)
+        text = row['synthetic_description']
+
+        tokenized = self.tokenizer(text, padding='max_length', truncation=True, max_length=self.max_length, return_tensors='pt')
+        input_ids = tokenized['input_ids'].squeeze(0)
+        attention_mask = tokenized['attention_mask'].squeeze(0)
+
+        return features, label, input_ids, attention_mask, tokenized['input_ids'].squeeze(0)
+
 # Training loop skeleton
 def train(model, dataloader, optimizer, device):
     """
