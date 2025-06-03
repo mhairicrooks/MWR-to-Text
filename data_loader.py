@@ -1,5 +1,5 @@
 """
-Data Loading and Selection Module for Breast Temperature Analysis
+Data Loading and Selection Module for Thermal Asymmetry Analysis
 
 This module defines two main classes:
 
