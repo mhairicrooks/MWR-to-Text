@@ -467,7 +467,9 @@ class DataLoaderSelector():
         X = self.data_loader.select_columns(self.data_loader.data, **selections, asymmetry_values=False)
 
         # Classification target
+        # multiclass approach
         y_class = self.data_loader.data['r:Th']
+       
 
         # Text generation target
         if text_column not in self.data_loader.data.columns:
