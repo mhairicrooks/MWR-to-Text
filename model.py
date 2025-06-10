@@ -22,13 +22,13 @@ Dependencies:
 import pandas as pd
 import numpy as np
 import torch
-import torch.nn as nn # neural network layers and modules
+import torch.nn as nn
 import torch.nn.init as init
-import torch.optim as optim # optimisers
-from torch.utils.data import DataLoader, Dataset # data batching tools
-from transformers import T5Tokenizer, T5ForConditionalGeneration # huggingface T5 model + tokenizer
-from sklearn.metrics import accuracy_score, f1_score, recall_score, roc_auc_score, confusion_matrix, classification_report # sklearn metrics for evaluation
-import torchmetrics # extra metrics
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
+from transformers import T5Tokenizer, T5ForConditionalGeneration
+from sklearn.metrics import accuracy_score, f1_score, recall_score, roc_auc_score, confusion_matrix, classification_report
+import torchmetrics
 import random
 
 
@@ -65,24 +65,14 @@ class MultitaskModel(nn.Module):
         super().__init__()
         
         # Shared encoder - maps temperature readings to embedding space
-        #self.encoder = nn.Sequential(
-        #    nn.Linear(num_features, 128),
-        #    nn.BatchNorm1d(128),
-        #    nn.ReLU(),
-        #    nn.Dropout(0.2),
-        #    nn.Linear(128, embedding_dim),
-        #   nn.BatchNorm1d(embedding_dim),
-        #    nn.ReLU(),
-        #    nn.Dropout(0.1)
-        #)
         self.encoder = nn.Sequential(
             nn.BatchNorm1d(num_features),
             GaussianNoise(0.0, 0.2),
-            nn.Linear(num_features, 1000),  # Same as original first layer
+            nn.Linear(num_features, 1000),
             nn.ReLU(),
             nn.BatchNorm1d(1000),
             nn.Dropout(0.2),
-            nn.Linear(1000, 512),          # Larger embedding
+            nn.Linear(1000, 512),          
             nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.Dropout(0.1)
@@ -91,33 +81,29 @@ class MultitaskModel(nn.Module):
         
         # Classification branch
         self.classifier = nn.Sequential(
-            nn.BatchNorm1d(embedding_dim),  # Just 256
+            nn.BatchNorm1d(embedding_dim),
             GaussianNoise(0.0, 0.2),
-            nn.Linear(embedding_dim, 1000),  # 256 → 1000
+            nn.Linear(embedding_dim, 1000),  
             nn.ReLU(),
             
-            #nn.BatchNorm1d(1000, momentum=0.99, eps=1e-5),
             nn.BatchNorm1d(1000, eps=1e-5),
             nn.Dropout(0.2),
             GaussianNoise(mean=0.0, std=0.2),
             nn.Linear(1000, 200),
             nn.ReLU(),
             
-            #nn.BatchNorm1d(200, momentum=0.99, eps=1e-5),
             nn.BatchNorm1d(200, eps=1e-5),
             nn.Dropout(0.2),
             GaussianNoise(mean=0.0, std=0.2),
             nn.Linear(200, 200),
             nn.ReLU(),
             
-            #nn.BatchNorm1d(200, momentum=0.99, eps=1e-5),
             nn.BatchNorm1d(200, eps=1e-5),
             nn.Dropout(0.2),
             GaussianNoise(mean=0.0, std=0.2),
             nn.Linear(200, 200),
             nn.ReLU(),
             
-            #nn.BatchNorm1d(200, momentum=0.99, eps=1e-5),
             nn.BatchNorm1d(200, eps=1e-5),
             nn.Dropout(0.2),
             nn.Linear(200, 200),
@@ -136,11 +122,11 @@ class MultitaskModel(nn.Module):
         for param in self.t5.encoder.parameters():
             param.requires_grad = False
             
-        # Loss weights
+        # loss weights
         self.classification_weight = 1.0
         self.generation_weight = 0.001
         
-        # Initialize weights
+        # ilnitialise weights
         self._init_weights()
         
     def _init_weights(self):
@@ -150,37 +136,31 @@ class MultitaskModel(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
         
-        # Initialize feature projection layer
+        # initialise feature projection layer
         nn.init.xavier_uniform_(self.feature_projection.weight)
         if self.feature_projection.bias is not None:
             nn.init.zeros_(self.feature_projection.bias)
     
     def forward(self, features, input_ids=None, attention_mask=None, labels=None):
-        # Pass temperature readings through shared encoder
+        # pass temperature readings through shared encoder
         embedding = self.encoder(features)
         
-        # new
-        # Concatenate original features with embedding
-        #combined_input = torch.cat([features, embedding], dim=1)
-        #class_logits = self.classifier(combined_input)
-        
-        
-        # Classification branch
+        # classification branch
         class_logits = self.classifier(embedding)
         
-        # Text generation branch, using shared features
+        # text generation branch, using shared features
         if input_ids is not None and labels is not None:
-            # Project feature embedding to T5's embedding dimension
+            # project feature embedding to T5's embedding dimension
             feature_embedding = self.feature_projection(embedding)  # [batch_size, d_model]
             
-            # Get T5's input embeddings
+            # get T5's input embeddings
             input_embeddings = self.t5.encoder.embed_tokens(input_ids)  # [batch_size, seq_len, d_model]
             
-            # Add feature information to input embeddings
-            # Option 1: Add to all positions (broadcasting)
+            # add feature information to input embeddings
+            # add to all positions (broadcasting)
             enhanced_embeddings = input_embeddings + feature_embedding.unsqueeze(1)
             
-            # Forward through T5 with enhanced embeddings
+            # forward through T5 with enhanced embeddings
             t5_output = self.t5(
                 inputs_embeds=enhanced_embeddings,
                 attention_mask=attention_mask,
@@ -204,7 +184,7 @@ class MultitaskModel(nn.Module):
             )
         
 
-# Define Dataset class
+# define Dataset class
 class MultitaskDataset(Dataset):
     """
     A custom PyTorch Dataset for multitask learning that combines structured features 
@@ -263,6 +243,32 @@ def create_weighted_sampler(dataset):
     return WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
 
 def get_parameter_groups(model):
+    """
+   Separates model parameters into three distinct groups for differential training.
+   
+   This function organizes parameters from a multi-task model with shared encoder,
+   classification head, and T5 generation components into separate groups to enable
+   different learning rates or optimization strategies for each component.
+   
+   Args:
+       model: A model object containing:
+           - encoder: Shared encoder component
+           - classifier: Classification head
+           - feature_projection: Feature projection layer for classification
+           - t5: T5 model with frozen encoder and trainable decoder
+   
+   Returns:
+       tuple: A 3-tuple containing:
+           - encoder_params (list): Parameters from the shared encoder
+           - classification_params (list): Combined parameters from classifier 
+             and feature projection layers
+           - generation_params (list): Parameters from the T5 decoder 
+             (T5 encoder parameters are excluded as they are frozen)
+   
+   Note:
+       The T5 encoder parameters are currently intentionally omitted since they are frozen
+       and do not require gradient updates during training.
+   """
     # Shared encoder parameters
     encoder_params = list(model.encoder.parameters())
     
@@ -320,6 +326,40 @@ def train(model, dataloader, optimizer, device):
 
 
 def evaluate(model, dataloader, device, threshold=0.5):
+    """
+   Evaluates a multi-task model on classification and generation tasks.
+   
+   This function performs evaluation on a model that handles both classification
+   and text generation tasks. It computes classification metrics using a specified
+   probability threshold and handles cases where generation loss may be None.
+   
+   Args:
+       model: Multi-task model with classification and generation capabilities
+       dataloader: DataLoader containing evaluation data with batches of:
+           (features, labels, input_ids, attention_mask, target_ids)
+       device: PyTorch device (CPU/GPU) for tensor operations
+       threshold (float, optional): Probability threshold for binary classification.
+           Defaults to 0.5.
+   
+   Returns:
+       tuple: A 2-tuple containing:
+           - avg_loss (float): Average total loss across all batches
+           - metrics (dict): Dictionary containing evaluation metrics:
+               - 'accuracy': Classification accuracy
+               - 'f1_score': Weighted F1 score
+               - 'sensitivity': Recall for positive class (true positive rate)
+               - 'specificity': Recall for negative class (true negative rate)
+               - 'auc_roc': Area under ROC curve (None if cannot be computed)
+               - 'confusion_matrix': Confusion matrix as nested list
+               - 'threshold': Threshold used for predictions
+   
+   Note:
+       - Model is set to evaluation mode during execution
+       - Generation loss is weighted and combined with classification loss when available
+       - AUC-ROC may be None if all samples belong to one class
+       - Uses softmax probabilities from class logits for threshold-based predictions
+   """
+    
     model.eval()
     clf_loss_fn = nn.CrossEntropyLoss()
     total_loss = 0
@@ -375,7 +415,7 @@ def evaluate(model, dataloader, device, threshold=0.5):
 
 def evaluate_with_sampling(model, dataloader, device, tokenizer, threshold=0.5, text_sample_size=500):
     """
-    Evaluate with full classification metrics but sampled text generation metrics.
+    Evaluate with full classification metrics but sampled text generation metrics to save computational resources.
     
     Args:
         text_sample_size: Number of samples to use for BERT/METEOR computation
