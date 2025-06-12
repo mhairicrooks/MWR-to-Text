@@ -185,6 +185,7 @@ class MultitaskModel(nn.Module):
         
 
 # define Dataset class
+
 class MultitaskDataset(Dataset):
     """
     A custom PyTorch Dataset for multitask learning that combines structured features 
@@ -196,7 +197,7 @@ class MultitaskDataset(Dataset):
             'synthetic_description' (a string).
         tokenizer (transformers.PreTrainedTokenizer): A HuggingFace tokenizer used to 
             tokenize the text descriptions.
-        max_length (int, optional): The maximum sequence length for tokenized text. Defaults to 64.
+        max_length (int, optional): The maximum sequence length for tokenized text. Defaults to 128.
 
     Returns:
         Tuple containing:
@@ -204,9 +205,9 @@ class MultitaskDataset(Dataset):
             - label (torch.LongTensor): Class label.
             - input_ids (torch.LongTensor): Token IDs from the tokenizer.
             - attention_mask (torch.LongTensor): Attention mask from the tokenizer.
-            - input_ids (torch.LongTensor): Token IDs (repeated, may be redundant).
+            - target_ids (torch.LongTensor): Target token IDs for generation.
     """
-    def __init__(self, df, tokenizer, max_length=64):
+    def __init__(self, df, tokenizer, max_length=128):
         self.df = df
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -218,13 +219,65 @@ class MultitaskDataset(Dataset):
         row = self.df.iloc[idx]
         features = torch.tensor(row['features'], dtype=torch.float)
         label = torch.tensor(row['class_label'], dtype=torch.long)
-        text = row['synthetic_description']
+        
+        # CREATE INPUT FROM TEMPERATURE READINGS
+        input_text = self.create_temperature_input(row)
+        
+        # TARGET IS THE SYNTHETIC CONCLUSION
+        target_text = row['Conclusion']
+        
+        # Tokenize input (what the model sees)
+        input_tokenized = self.tokenizer(
+            input_text, 
+            padding='max_length', 
+            truncation=True, 
+            max_length=self.max_length, 
+            return_tensors='pt'
+        )
+        
+        # Tokenize target (what the model should generate)
+        target_tokenized = self.tokenizer(
+            target_text,
+            padding='max_length',
+            truncation=True,
+            max_length=64,  # Conclusions are shorter
+            return_tensors='pt'
+        )
+        
+        return (
+            features,
+            label,
+            input_tokenized['input_ids'].squeeze(0),
+            input_tokenized['attention_mask'].squeeze(0),
+            target_tokenized['input_ids'].squeeze(0)
+        )
 
-        tokenized = self.tokenizer(text, padding='max_length', truncation=True, max_length=self.max_length, return_tensors='pt')
-        input_ids = tokenized['input_ids'].squeeze(0)
-        attention_mask = tokenized['attention_mask'].squeeze(0)
-
-        return features, label, input_ids, attention_mask, tokenized['input_ids'].squeeze(0)
+    def create_temperature_input(self, row):
+        """
+        Convert temperature readings into a text prompt for T5 using your exact column format
+        """
+        # Column names in order
+        temp_columns = [
+            'R1 int', 'L1 int', 'R2 int', 'L2 int', 'R3 int', 'L3 int', 'R4 int',
+            'L4 int', 'R5 int', 'L5 int', 'R6 int', 'L6 int', 'R7 int', 'L7 int',
+            'R8 int', 'L8 int', 'R9 int', 'L9 int', 'T1 int', 'T2 int', 'R0 int',
+            'L0 int', 'R1 sk', 'L1 sk', 'R2 sk', 'L2 sk', 'R3 sk', 'L3 sk', 'R4 sk',
+            'L4 sk', 'R5 sk', 'L5 sk', 'R6 sk', 'L6 sk', 'R7 sk', 'L7 sk', 'R8 sk',
+            'L8 sk', 'R9 sk', 'L9 sk', 'T1 sk', 'T2 sk', 'R0 sk', 'L0 sk'
+        ]
+        
+        # Create the temperature reading string
+        temp_readings = []
+        for col in temp_columns:
+            value = row[col]
+            # Clean up column name for display (remove spaces, make consistent)
+            clean_name = col.replace(' ', '_')
+            temp_readings.append(f"{clean_name}={value:.1f}")
+        
+        # Create the full input prompt
+        input_text = "Generate thermal assessment from readings: " + ", ".join(temp_readings)
+        
+        return input_text
     
 
 def create_weighted_sampler(dataset):
@@ -531,7 +584,7 @@ def evaluate_with_sampling(model, dataloader, device, tokenizer, threshold=0.5, 
             import nltk
             meteor_scores = []
             for gen, ref in zip(generated_texts, reference_texts):
-                meteor_scores.append(meteor_score([ref.lower()], gen.lower()))
+                meteor_scores.append(meteor_score([ref.lower().split()], gen.lower().split()))
 
             meteor_mean_score = np.mean(meteor_scores)
         except Exception as e:
@@ -581,6 +634,10 @@ def train_and_validate_model(
         print(f"  F1-Score     : {val_metrics['f1_score']:.4f}")
         print(f"  Sensitivity  : {val_metrics['sensitivity']:.4f}")
         print(f"  Specificity  : {val_metrics['specificity']:.4f}")
+        print(f"Classification loss: {clf_loss.item():.4f}")
+        if gen_loss is not None:
+            print(f"Generation loss: {gen_loss.item():.4f}")
+            print(f"Weighted gen loss: {gen_weight * gen_loss.item():.6f}")
         if val_metrics['auc_roc'] is not None:
             print(f"  AUC-ROC      : {val_metrics['auc_roc']:.4f}")
         else:
