@@ -525,32 +525,33 @@ def evaluate_with_sampling(model, dataloader, device, tokenizer, threshold=0.5, 
             print(f"Error calculating BERT Score: {e}")
         
         # METEOR Score
+        
+        from nltk.translate.meteor_score import meteor_score
         try:
             import nltk
-            from nltk.translate.meteor_score import meteor_score
-            nltk.data.path.append('/home/s2080063/nltk_data')
             meteor_scores = []
             for gen, ref in zip(generated_texts, reference_texts):
-                gen_tokens = nltk.word_tokenize(gen.lower())
-                ref_tokens = nltk.word_tokenize(ref.lower())
-                meteor_scores.append(meteor_score([ref_tokens], gen_tokens))
+                meteor_scores.append(meteor_score([ref.lower()], gen.lower()))
+
             meteor_mean_score = np.mean(meteor_scores)
         except Exception as e:
             print(f"Error calculating METEOR Score: {e}")
     
     return total_loss / len(dataloader), {
-        'accuracy': accuracy,
-        'f1_score': f1,
-        'sensitivity': sensitivity,
-        'specificity': specificity,
-        'auc_roc': auc,
-        'confusion_matrix': conf_matrix.tolist(),
-        'threshold': threshold,
-        'avg_bertscore_f1': bert_f1_score,
-        'avg_meteor': meteor_mean_score,
-        'text_samples_used': len(generated_texts),
-        'total_samples': total_samples
-    }
+    'accuracy': accuracy,
+    'f1_score': f1,
+    'sensitivity': sensitivity,
+    'specificity': specificity,
+    'auc_roc': auc,
+    'confusion_matrix': conf_matrix.tolist(),
+    'threshold': threshold,
+    'avg_bertscore_f1': bert_f1_score,
+    'avg_meteor': meteor_mean_score,
+    'text_samples_used': len(generated_texts),
+    'total_samples': total_samples,
+    'generated_texts': generated_texts,
+    'reference_texts': reference_texts,
+}
 
 def train_and_validate_model(
     model, train_loader, val_loader, optimizer, device, num_epochs=30
