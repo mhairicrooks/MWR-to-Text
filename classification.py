@@ -1,16 +1,38 @@
+import random
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-import numpy as np
-import pandas as pd
+
 from sklearn.model_selection import train_test_split
-import random
-import matplotlib as plt
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, roc_auc_score
-import torch.nn.functional as F
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    confusion_matrix,
+    roc_auc_score
+)
 
 class GaussianNoise(nn.Module):
+    """
+    Module that adds Gaussian noise to inputs during training.
+
+    During training, this layer perturbs the input tensor by adding random noise 
+    drawn from a normal distribution with a specified mean and standard deviation. 
+    This can help improve model robustness and prevent overfitting.
+
+    The noise is only added when the module is in training mode. In evaluation mode,
+    the input is returned as-is.
+
+    Parameters:
+        mean (float): The mean of the Gaussian noise. Default is 0.0.
+        std (float): The standard deviation of the Gaussian noise. Default is 0.2.
+
+    """
     def __init__(self, mean=0.0, std=0.2):
         super().__init__()
         self.mean = mean
@@ -23,6 +45,27 @@ class GaussianNoise(nn.Module):
 
     
 class ClassificationModel(nn.Module):
+    """
+    A fully connected neural network for classification tasks with noise injection and regularization.
+
+    This model consists of several linear layers interleaved with batch normalization, dropout, 
+    ReLU activations, and Gaussian noise layers for improved generalization. It supports 
+    configurable input feature size and number of output classes.
+
+    The network architecture includes:
+        - Input BatchNorm and GaussianNoise layers
+        - Multiple hidden layers with linear transformations, batch normalization,
+          dropout, ReLU activations, and Gaussian noise
+        - Final linear layer producing logits for classification
+
+    Weights of all linear layers are initialized using Xavier uniform initialization,
+    and biases are initialized to zero.
+
+    Args:
+        num_features (int): Number of input features. Default is 44.
+        num_classes (int): Number of output classes. Default is 6.
+
+    """
     def __init__(self, num_features=44, num_classes=6):
         super().__init__()
         self.model = nn.Sequential(
@@ -83,6 +126,24 @@ class TabularDataset(Dataset):
     
     
 def train(model, loader, optimizer, criterion, device):
+    """
+    Train the model for one epoch on the given dataset loader.
+
+    Performs a full pass through the data loader, computing predictions,
+    calculating the loss, performing backpropagation, and updating model parameters.
+
+    Args:
+        model (nn.Module): The neural network model to train.
+        loader (DataLoader): DataLoader providing training data batches.
+        optimizer (torch.optim.Optimizer): Optimizer for updating model weights.
+        criterion (callable): Loss function to compute the training loss.
+        device (torch.device): Device on which to perform computations (CPU or GPU).
+
+    Returns:
+        tuple: A tuple containing:
+            - average_loss (float): Average loss over all batches.
+            - accuracy (float): Accuracy computed on the training data for this epoch.
+    """
     model.train()
     running_loss = 0
     y_true, y_pred = [], []
@@ -107,6 +168,28 @@ def train(model, loader, optimizer, criterion, device):
 
 
 def evaluate_binary(model, loader, criterion, device):
+    """
+    Evaluate a binary classification model on a validation or test dataset.
+
+    Performs a forward pass without gradient computation and calculates multiple
+    performance metrics including loss, accuracy, F1 score, sensitivity, specificity,
+    and AUC-ROC score.
+
+    Args:
+        model (nn.Module): The trained model to evaluate.
+        loader (DataLoader): DataLoader providing evaluation data batches.
+        criterion (callable): Loss function used to compute the loss.
+        device (torch.device): Device on which to perform computations (CPU or GPU).
+
+    Returns:
+        tuple: A tuple containing:
+            - average_loss (float): Average loss over the dataset.
+            - accuracy (float): Classification accuracy.
+            - f1_score (float): Weighted F1 score.
+            - sensitivity (float or None): True positive rate, or None if undefined.
+            - specificity (float or None): True negative rate, or None if undefined.
+            - auc (float or None): Area under the ROC curve, or None if not computable.
+    """
     model.eval()
     y_true, y_pred = [], []
     y_prob = []  # For AUC
@@ -215,6 +298,17 @@ def evaluate_multiclass(model, loader, criterion, device):
     )
 
 class EarlyStopping:
+    """
+    Implements early stopping to terminate training when validation loss stops improving.
+
+    This class monitors the validation loss during training and triggers early stopping
+    if the loss does not improve by at least `min_delta` for a specified number of 
+    consecutive epochs (`patience`).
+
+    Args:
+        patience (int): Number of epochs to wait without improvement before stopping. Default is 7.
+        min_delta (float): Minimum change in validation loss to qualify as an improvement. Default is 0.001.
+    """
     def __init__(self, patience=7, min_delta=0.001):
         self.patience = patience
         self.min_delta = min_delta
