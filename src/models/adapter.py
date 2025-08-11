@@ -847,15 +847,16 @@ def evaluate_with_sampling(model, dataloader, device, tokenizer, threshold=0.5, 
                     sample_input_ids = input_ids[i:i+1]
                     sample_attention_mask = attention_mask[i:i+1]
                     sample_target_ids = target_ids[i:i+1]
-
+                    
                     generated_ids = model.t5.generate(
-                        input_ids=sample_input_ids,
-                        attention_mask=sample_attention_mask,
-                        max_length=64,
-                        num_beams=4,
-                        do_sample=False,
-                        early_stopping=True
-                    )
+                                        input_ids=sample_input_ids,
+                                        attention_mask=sample_attention_mask,
+                                        max_length=64,
+                                        do_sample=True,        # Enable sampling
+                                        temperature=0.8,       # Add randomness
+                                        top_p=0.9,            # Nucleus sampling
+                                        #early_stopping=True
+                                    )
 
                     gen_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
                     ref_text = tokenizer.decode(sample_target_ids[0], skip_special_tokens=True)
