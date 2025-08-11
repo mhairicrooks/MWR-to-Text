@@ -119,8 +119,8 @@ class HierarchicalFeatureEncoder(nn.Module):
             'integrated': integrated_features,
             'combined': combined_features
         }
-
-
+    
+# Fix the HierarchicalClassifier forward method (missing 'def'):
 class HierarchicalClassifier(nn.Module):
     """
     Hierarchical classifier that makes predictions at multiple levels
@@ -185,7 +185,7 @@ class HierarchicalClassifier(nn.Module):
             nn.Softmax(dim=1)
         )
         
-    def forward(self, hierarchical_features):
+    def forward(self, hierarchical_features):  # FIXED: Added 'def' keyword
         # Get predictions from each level
         level1_pred = self.level1_classifier(hierarchical_features['level1'])
         level2_pred = self.level2_classifier(hierarchical_features['level2'])
@@ -214,49 +214,75 @@ class HierarchicalClassifier(nn.Module):
         }
 
 
-class MLPFeatureProjector(nn.Module):
+
+class HierarchicalFeatureProjector(nn.Module):
     """
-    MLP-based feature projector for T5 integration
+    Hierarchical feature projector that supports multiple projection modes
     """
-    def __init__(self, feature_dim=512, t5_hidden_dim=512):
+    def __init__(self, feature_dim=512, t5_hidden_dim=512, projection_type='mlp'):
         super().__init__()
+        self.projection_type = projection_type
         
-        self.projector = nn.Sequential(
-            nn.Linear(feature_dim, t5_hidden_dim * 2),
-            nn.ReLU(),
-            nn.BatchNorm1d(t5_hidden_dim * 2),
-            nn.Dropout(0.1),
-            nn.Linear(t5_hidden_dim * 2, t5_hidden_dim * 2),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(t5_hidden_dim * 2, t5_hidden_dim)
-        )
-        
-    def forward(self, features):
+        if projection_type == 'linear':
+            self.projector = nn.Linear(feature_dim, t5_hidden_dim)
+        elif projection_type == 'mlp':
+            self.projector = nn.Sequential(
+                nn.Linear(feature_dim, t5_hidden_dim * 2),
+                nn.ReLU(),
+                nn.BatchNorm1d(t5_hidden_dim * 2),
+                nn.Dropout(0.1),
+                nn.Linear(t5_hidden_dim * 2, t5_hidden_dim * 2),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(t5_hidden_dim * 2, t5_hidden_dim)
+            )
+        elif projection_type == 'attention':
+            self.projector = nn.Sequential(
+                nn.Linear(feature_dim, t5_hidden_dim),
+                nn.LayerNorm(t5_hidden_dim)
+            )
+            self.attention = nn.MultiheadAttention(t5_hidden_dim, num_heads=8, batch_first=True)
+        else:
+            raise ValueError(f"Unknown projection type: {projection_type}")
+    
+    def forward(self, features, t5_embeddings=None):
         """
         Args:
             features: [batch_size, feature_dim] - hierarchical features
+            t5_embeddings: [batch_size, seq_len, hidden_dim] - T5 input embeddings (for attention)
         
         Returns:
-            projected_features: [batch_size, 1, t5_hidden_dim]
+            projected_features: [batch_size, 1, t5_hidden_dim] or modified t5_embeddings
         """
-        projected = self.projector(features)  # [batch, t5_hidden_dim]
-        return projected.unsqueeze(1)         # [batch, 1, t5_hidden_dim]
+        if self.projection_type == 'attention' and t5_embeddings is not None:
+            # Project features and use as query to attend to T5 embeddings
+            projected = self.projector(features)  # [batch, t5_hidden_dim]
+            projected = projected.unsqueeze(1)     # [batch, 1, t5_hidden_dim]
+            
+            # Attention between projected features and T5 embeddings
+            attended, _ = self.attention(projected, t5_embeddings, t5_embeddings)
+            return attended  # [batch, 1, t5_hidden_dim]
+        else:
+            # Simple projection (linear or MLP)
+            projected = self.projector(features)  # [batch, t5_hidden_dim]
+            return projected.unsqueeze(1)         # [batch, 1, t5_hidden_dim]
 
 
 class HierarchicalMultitaskModel(nn.Module):
     """
-    Hierarchical multitask model with concat projection + MLP and minimal text
+    Enhanced hierarchical multitask model with configurable injection modes
     """
     def __init__(self, num_features=44, base_dim=512, num_classes=6, 
-                 t5_model_name='t5-small', classification_weight=1.0, generation_weight=1.0):
+                 t5_model_name='t5-small', projection_mode='concat', 
+                 projection_type='mlp', classification_weight=1.0, 
+                 generation_weight=1.0):
         super().__init__()
         
-        # Fixed loss weights (no dynamic weighting)
+        self.projection_mode = projection_mode
         self.classification_weight = classification_weight
         self.generation_weight = generation_weight
         
-        # Hierarchical feature encoder
+        # Hierarchical feature encoder (unchanged)
         self.hierarchical_encoder = HierarchicalFeatureEncoder(num_features, base_dim)
         
         # Get feature dimensions for classifier
@@ -267,51 +293,90 @@ class HierarchicalMultitaskModel(nn.Module):
             'integrated': self.hierarchical_encoder.integrated_dim
         }
         
-        # Hierarchical classifier
+        # Hierarchical classifier (unchanged)
         self.hierarchical_classifier = HierarchicalClassifier(feature_dims, num_classes)
         
         # T5 model for text generation
         self.t5 = T5ForConditionalGeneration.from_pretrained(t5_model_name, local_files_only=True)
         
-        # MLP feature projector for T5 integration (concat mode)
-        t5_hidden_dim = self.t5.config.d_model
-        self.feature_projector = MLPFeatureProjector(
-            feature_dim=self.hierarchical_encoder.integrated_dim,
-            t5_hidden_dim=t5_hidden_dim
-        )
+        # Feature projector with configurable projection mode
+        if projection_mode != 'none':
+            t5_hidden_dim = self.t5.config.d_model
+            self.feature_projector = HierarchicalFeatureProjector(
+                feature_dim=self.hierarchical_encoder.integrated_dim,
+                t5_hidden_dim=t5_hidden_dim,
+                projection_type=projection_type
+            )
+        else:
+            self.feature_projector = None
         
         # Initialize weights
         self._init_weights()
         
     def _init_weights(self):
         """Initialize weights for custom layers"""
-        for module in [self.hierarchical_encoder, self.hierarchical_classifier, self.feature_projector]:
+        modules_to_init = [self.hierarchical_encoder, self.hierarchical_classifier]
+        if self.feature_projector is not None:
+            modules_to_init.append(self.feature_projector)
+            
+        for module in modules_to_init:
             for m in module.modules():
                 if isinstance(m, nn.Linear):
                     nn.init.xavier_uniform_(m.weight)
                     if m.bias is not None:
                         nn.init.zeros_(m.bias)
     
-    def _inject_features_concat_mode(self, features, input_ids, attention_mask):
+    def _inject_features_into_t5(self, features, input_ids, attention_mask):
         """
-        Inject hierarchical features using concat projection mode with MLP
+        Inject hierarchical features into T5 based on projection_mode
         """
         batch_size = features.shape[0]
         
-        # Get T5 input embeddings
-        t5_embeddings = self.t5.encoder.embed_tokens(input_ids)
-        
-        # Project hierarchical features using MLP
-        projected_features = self.feature_projector(features)  # [batch, 1, hidden_dim]
-        
-        # Concatenate projected features at the beginning (prefix style)
-        combined_embeddings = torch.cat([projected_features, t5_embeddings], dim=1)
-        
-        # Extend attention mask for the additional feature token
-        feature_mask = torch.ones(batch_size, 1, device=attention_mask.device)
-        extended_attention_mask = torch.cat([feature_mask, attention_mask], dim=1)
-        
-        return combined_embeddings, extended_attention_mask
+        if self.projection_mode == 'none':
+            # No injection, use T5 normally
+            return input_ids, attention_mask, False
+            
+        elif self.projection_mode == 'prefix':
+            # Add projected features as prefix tokens
+            t5_embeddings = self.t5.encoder.embed_tokens(input_ids)
+            projected_features = self.feature_projector(features)  # [batch, 1, hidden_dim]
+            
+            # Concatenate projected features at the beginning
+            combined_embeddings = torch.cat([projected_features, t5_embeddings], dim=1)
+            
+            # Extend attention mask
+            feature_mask = torch.ones(batch_size, 1, device=attention_mask.device)
+            extended_attention_mask = torch.cat([feature_mask, attention_mask], dim=1)
+            
+            return combined_embeddings, extended_attention_mask, True  # True indicates we're passing embeddings
+            
+        elif self.projection_mode == 'concat':
+            # Average pool projected features and add to each token
+            t5_embeddings = self.t5.encoder.embed_tokens(input_ids)
+            projected_features = self.feature_projector(features)  # [batch, 1, hidden_dim]
+            
+            # Broadcast and add to all tokens
+            projected_features = projected_features.expand(-1, t5_embeddings.shape[1], -1)
+            combined_embeddings = t5_embeddings + projected_features
+            
+            return combined_embeddings, attention_mask, True
+            
+        elif self.projection_mode == 'attention':
+            # Use attention to blend features with text embeddings
+            t5_embeddings = self.t5.encoder.embed_tokens(input_ids)
+            attended_features = self.feature_projector(features, t5_embeddings)  # [batch, 1, hidden_dim]
+            
+            # Concatenate attended features at the beginning
+            combined_embeddings = torch.cat([attended_features, t5_embeddings], dim=1)
+            
+            # Extend attention mask
+            feature_mask = torch.ones(batch_size, 1, device=attention_mask.device)
+            extended_attention_mask = torch.cat([feature_mask, attention_mask], dim=1)
+            
+            return combined_embeddings, extended_attention_mask, True
+            
+        else:
+            raise ValueError(f"Unknown projection mode: {self.projection_mode}")
     
     def forward(self, features, input_ids=None, attention_mask=None, labels=None):
         # Process features through hierarchical encoder
@@ -331,28 +396,43 @@ class HierarchicalMultitaskModel(nn.Module):
             # Use integrated features for text generation
             integrated_features = hierarchical_features['integrated']
             
-            # Inject features using concat mode with MLP
-            combined_embeddings, extended_attention_mask = self._inject_features_concat_mode(
-                integrated_features, input_ids, attention_mask
-            )
-            
-            # Generate with modified encoder inputs
-            encoder_outputs = self.t5.encoder(
-                inputs_embeds=combined_embeddings,
-                attention_mask=extended_attention_mask
-            )
-            
-            t5_output = self.t5(
-                encoder_outputs=encoder_outputs,
-                attention_mask=extended_attention_mask,
-                labels=labels
-            )
+            if self.projection_mode != 'none':
+                # Inject features using the specified mode
+                modified_input, modified_attention, use_embeddings = self._inject_features_into_t5(
+                    integrated_features, input_ids, attention_mask
+                )
+                
+                if use_embeddings:
+                    # Pass embeddings directly to encoder
+                    encoder_outputs = self.t5.encoder(
+                        inputs_embeds=modified_input,
+                        attention_mask=modified_attention
+                    )
+                    
+                    # Generate with modified encoder outputs
+                    t5_output = self.t5(
+                        encoder_outputs=encoder_outputs,
+                        attention_mask=modified_attention,
+                        labels=labels
+                    )
+                else:
+                    t5_output = self.t5(
+                        input_ids=modified_input,
+                        attention_mask=modified_attention,
+                        labels=labels
+                    )
+            else:
+                # Original approach - no feature injection
+                t5_output = self.t5(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels
+                )
             
             generation_loss = t5_output.loss
             generation_logits = t5_output.logits
         
-        # Return exactly 5 values in the format expected by your training function:
-        # class_logits, gen_loss, gen_logits, clf_weight, gen_weight
+        # Return exactly 5 values in the format expected by your training function
         return (
             class_logits,                    # 1
             generation_loss,                 # 2  
@@ -364,12 +444,10 @@ class HierarchicalMultitaskModel(nn.Module):
     def get_current_weights(self):
         """Return current loss weights for compatibility"""
         return self.classification_weight, self.generation_weight
-
-
-
+    
 class HierarchicalDataset(Dataset):
     """
-    Dataset for hierarchical model with minimal text input
+    Dataset for hierarchical model with full text input
     """
     def __init__(self, df, tokenizer, max_length=128):
         self.df = df
@@ -383,11 +461,11 @@ class HierarchicalDataset(Dataset):
         row = self.df.iloc[idx]
         features = torch.tensor(row['features'], dtype=torch.float)
         label = torch.tensor(row['class_label'], dtype=torch.long)
-        
-        # Minimal text input - forces model to rely on hierarchical features
-        input_text = "Generate thermal assessment:"
+    
+        # Full text input using temperature readings
+        input_text = self.create_temperature_input(row)
         target_text = row['synthetic_description']
-        
+    
         # Tokenize input and target
         input_tokenized = self.tokenizer(
             input_text, 
@@ -396,7 +474,7 @@ class HierarchicalDataset(Dataset):
             max_length=self.max_length, 
             return_tensors='pt'
         )
-        
+    
         target_tokenized = self.tokenizer(
             target_text,
             padding='max_length',
@@ -404,7 +482,7 @@ class HierarchicalDataset(Dataset):
             max_length=64,
             return_tensors='pt'
         )
-        
+    
         return (
             features,
             label,
@@ -413,9 +491,31 @@ class HierarchicalDataset(Dataset):
             target_tokenized['input_ids'].squeeze(0)
         )
 
+    def create_temperature_input(self, row):
+        """Creates full temperature reading prompt"""
+        temp_columns = [
+            'R1 int', 'L1 int', 'R2 int', 'L2 int', 'R3 int', 'L3 int', 'R4 int',
+            'L4 int', 'R5 int', 'L5 int', 'R6 int', 'L6 int', 'R7 int', 'L7 int',
+            'R8 int', 'L8 int', 'R9 int', 'L9 int', 'T1 int', 'T2 int', 'R0 int',
+            'L0 int', 'R1 sk', 'L1 sk', 'R2 sk', 'L2 sk', 'R3 sk', 'L3 sk', 'R4 sk',
+            'L4 sk', 'R5 sk', 'L5 sk', 'R6 sk', 'L6 sk', 'R7 sk', 'L7 sk', 'R8 sk',
+            'L8 sk', 'R9 sk', 'L9 sk', 'T1 sk', 'T2 sk', 'R0 sk', 'L0 sk'
+        ]
+        
+        temp_readings = []
+        for col in temp_columns:
+            value = row[col]
+            clean_name = col.replace(' ', '_')
+            temp_readings.append(f"{clean_name}={value:.1f}")
+        
+        input_text = "Generate thermal assessment from readings: " + ", ".join(temp_readings)
+        return input_text
+
 
 def create_hierarchical_pipeline(
     df_train, df_val, df_test,
+    projection_mode='concat',          # NEW: configurable injection mode
+    projection_type='mlp',             # NEW: configurable projection type
     tokenizer_path='./t5-small-local/',
     batch_size=32,
     learning_rate=5e-5,
@@ -425,11 +525,11 @@ def create_hierarchical_pipeline(
     device_override=None
 ):
     """
-    Set up hierarchical experiment pipeline with projection + MLP and minimal text
+    Set up hierarchical experiment pipeline with configurable injection modes
     """
     print(f"\n{'='*80}")
     print(f"HIERARCHICAL MULTITASK MODEL")
-    print(f"Architecture: Hierarchical encoder + Concat projection + MLP + Minimal text")
+    print(f"Architecture: Hierarchical encoder + {projection_mode.upper()} projection ({projection_type})")
     print(f"Classification weight: {classification_weight}")
     print(f"Generation weight: {generation_weight}")
     print(f"{'='*80}")
@@ -437,7 +537,7 @@ def create_hierarchical_pipeline(
     # Load tokenizer
     tokenizer = T5Tokenizer.from_pretrained(tokenizer_path, local_files_only=True)
     
-    # Create datasets with minimal text
+    # Create datasets
     train_dataset = HierarchicalDataset(df_train, tokenizer)
     val_dataset = HierarchicalDataset(df_val, tokenizer)
     test_dataset = HierarchicalDataset(df_test, tokenizer)
@@ -451,18 +551,21 @@ def create_hierarchical_pipeline(
     device = torch.device(device_override if device_override else ('cuda' if torch.cuda.is_available() else 'cpu'))
     print(f"Using device: {device}")
     
-    # Initialize hierarchical model
+    # Initialize hierarchical model with configurable projection
     model = HierarchicalMultitaskModel(
         num_classes=2,  # Assuming binary classification
         t5_model_name=tokenizer_path,
+        projection_mode=projection_mode,
+        projection_type=projection_type,
         classification_weight=classification_weight,
         generation_weight=generation_weight
     )
     
     print(f"Model configuration:")
     print(f"  Hierarchical levels: 3 + integration")
-    print(f"  Projection mode: concat + MLP")
-    print(f"  Text mode: minimal")
+    print(f"  Projection mode: {projection_mode}")
+    print(f"  Projection type: {projection_type}")
+    print(f"  Feature projection: {'Yes' if model.feature_projector is not None else 'No'}")
     print(f"  Feature dimensions: L1={model.hierarchical_encoder.level1_dim}, "
           f"L2={model.hierarchical_encoder.level2_dim}, L3={model.hierarchical_encoder.level3_dim}")
     
@@ -689,15 +792,16 @@ def evaluate_with_sampling(model, dataloader, device, tokenizer, threshold=0.5, 
                     sample_input_ids = input_ids[i:i+1]
                     sample_attention_mask = attention_mask[i:i+1]
                     sample_target_ids = target_ids[i:i+1]
-
+                    
                     generated_ids = model.t5.generate(
-                        input_ids=sample_input_ids,
-                        attention_mask=sample_attention_mask,
-                        max_length=64,
-                        num_beams=4,
-                        do_sample=False,
-                        early_stopping=True
-                    )
+                                        input_ids=sample_input_ids,
+                                        attention_mask=sample_attention_mask,
+                                        max_length=64,
+                                        do_sample=True,        # Enable sampling
+                                        temperature=0.8,       # Add randomness
+                                        top_p=0.9,            # Nucleus sampling
+                                        #early_stopping=True
+                                    )
 
                     gen_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
                     ref_text = tokenizer.decode(sample_target_ids[0], skip_special_tokens=True)

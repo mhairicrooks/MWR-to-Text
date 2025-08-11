@@ -620,8 +620,28 @@ def evaluate_with_sampling(model, dataloader, device, tokenizer, threshold=0.5, 
     generated_texts = []
     reference_texts = []
     total_samples = len(dataloader.dataset)
+    
+    print("=== ENCODER EMBEDDING DIAGNOSTIC ===")
+    diagnostic_done = False
+    
+    with torch.no_grad():
+        for features, labels, input_ids, attention_mask, target_ids in dataloader:
+            features, labels = features.to(device), labels.to(device)
+            
+            # ADD THIS DIAGNOSTIC CODE - ONLY RUN ONCE
+            if not diagnostic_done:
+                embeddings = model.encoder(features)
+                print(f"Embedding variance: {embeddings.var(dim=0).mean():.6f}")
+                print(f"Embedding std: {embeddings.std(dim=0).mean():.6f}")
+                print(f"Embedding range: {embeddings.max() - embeddings.min():.6f}")
+                if embeddings.shape[0] > 1:
+                    cos_sim = torch.cosine_similarity(embeddings[0:1], embeddings[1:2])
+                    print(f"Cosine similarity between samples 0 and 1: {cos_sim.item():.6f}")
+                print(f"First 2 samples, first 5 dims:\n{embeddings[:2, :5]}")
+                print("=== END DIAGNOSTIC ===\n")
+                diagnostic_done = True
 
-    # CHANGE 2: Handle None case for full dataset evaluation
+    # Handle None case for full dataset evaluation
     if text_sample_size is None or text_sample_size >= total_samples:
         # Evaluate on ALL samples
         sample_indices = set(range(total_samples))
@@ -633,7 +653,7 @@ def evaluate_with_sampling(model, dataloader, device, tokenizer, threshold=0.5, 
 
     current_idx = 0
 
-    # REST OF THE FUNCTION STAYS EXACTLY THE SAME
+    
     with torch.no_grad():
         for features, labels, input_ids, attention_mask, target_ids in dataloader:
             features, labels = features.to(device), labels.to(device)
@@ -663,13 +683,14 @@ def evaluate_with_sampling(model, dataloader, device, tokenizer, threshold=0.5, 
                     sample_target_ids = target_ids[i:i+1]
 
                     generated_ids = model.t5.generate(
-                        input_ids=sample_input_ids,
-                        attention_mask=sample_attention_mask,
-                        max_length=64,
-                        num_beams=4,
-                        do_sample=False,
-                        early_stopping=True
-                    )
+                                        input_ids=sample_input_ids,
+                                        attention_mask=sample_attention_mask,
+                                        max_length=64,
+                                        do_sample=True,        # Enable sampling
+                                        temperature=0.8,       # Add randomness
+                                        top_p=0.9,            # Nucleus sampling
+                                        #early_stopping=True
+                                    )
 
                     gen_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
                     ref_text = tokenizer.decode(sample_target_ids[0], skip_special_tokens=True)
